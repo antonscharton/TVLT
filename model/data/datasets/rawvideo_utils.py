@@ -13,7 +13,7 @@ import torchaudio
 from decord import VideoReader, AudioReader
 from decord import cpu, gpu
 import librosa
-import audiosegment
+#import audiosegment
 from moviepy.editor import AudioFileClip
 import ffmpeg
 
@@ -281,7 +281,7 @@ def load_video(path, num_frames=8, timestamp=None):
         downsamlp_indices = np.random.choice(list(range(start, end)), num_frames)
 
     else:                       
-        downsamlp_indices = np.linspace(0, len(video), num_frames, endpoint=False).astype(np.int)
+        downsamlp_indices = np.linspace(0, len(video), num_frames, endpoint=False).astype("int")
 
     video = video.get_batch(downsamlp_indices).asnumpy()
     video = crop_image_only_outside(video)
