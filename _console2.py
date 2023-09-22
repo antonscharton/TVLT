@@ -283,22 +283,25 @@ class CUIX(torch.utils.data.Dataset):
 
 
 
+gpu_id = 0
 dataset = CUIX(Path(r"D:\datasets\lmmtm_faces_0509"), include_audio=False)
 model = MOSEI_sentiment_model()
 
 
-device  = 'cuda:0'
+device = torch.device(f"cuda:{gpu_id}" if torch.cuda.is_available() else "cpu")
 model.to(device)
 model.eval()
 
 
 
-sample = dataset[209]
-print(sample["key"])
-video, audio = sample["video"].to(device), sample["audio"].to(device)
+samples = [dataset[207], dataset[208], dataset[209]]
+
+video = torch.cat([sample["video"] for sample in samples], dim=0).to(device)
+audio = torch.cat([sample["audio"] for sample in samples], dim=0).to(device)
 
 with torch.no_grad():
     encoder_last_hidden_outputs, *_ = model(video=video, audio=audio)
     sentiment_score = model.classifier(encoder_last_hidden_outputs).squeeze().data.cpu().numpy()
+
 
 print('sentiment intensity:', np.round(sentiment_score, 3))
