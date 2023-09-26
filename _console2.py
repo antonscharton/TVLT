@@ -5,10 +5,13 @@ import os
 import re
 import cv2
 import numpy as np
+import matplotlib as mpl
+import matplotlib.pyplot as plt
 
 from demos import MOSEI_sentiment_model
 
 
+#from model.data.datasets.rawvideo_utils import crop_image_only_outside, center_crop, preprocess_audio
 
 # data flow:
 #   log     ->      SEQUENCER   ->  zeros, ones      ->     AUGMENTATIONS        -> zeros, ones
@@ -105,6 +108,7 @@ class CUIX(torch.utils.data.Dataset):
     def sequence(self):
         # baseline sequencing
         self.sequences = []
+        self.sequences_keys = []
         for key in self.keys:
 
             log = self.logs[key]
@@ -115,9 +119,11 @@ class CUIX(torch.utils.data.Dataset):
 
             for zero in zeros:
                 self.sequences.append({"key": key, "start": zero[0], "end": zero[1], "auto_label": 0, "user_label": label_user})
+                self.sequences_keys.append(key)
 
             for one in ones:
                 self.sequences.append({"key": key, "start": one[0], "end": one[1], "auto_label": 1, "user_label": label_user})
+                self.sequences_keys.append(key)
 
 
     @staticmethod
@@ -126,6 +132,30 @@ class CUIX(torch.utils.data.Dataset):
         seq_duration = settings["seq_duration"]
         seq_sliding_delta = settings["seq_sliding_delta"]
 
+        split = log.split("\n\n")
+        actions = [line.replace("\n", "") for line in split[-1].split("\n")][1:-1]
+
+        start = 0
+        end = int(actions[-1].split(" ")[0])
+        splits = np.arange(start, end, seq_sliding_delta)
+        starts = np.unique(np.hstack([splits[splits + seq_duration <= end], end - seq_duration]))
+        ends = starts + seq_duration
+
+        if isinstance(autolabel, int):
+            i_ones = starts >= autolabel
+            zeros = np.vstack([starts[~i_ones], ends[~i_ones]]).T.tolist()
+            ones = np.vstack([starts[i_ones], ends[i_ones]]).T.tolist()
+
+        elif ".cantsolve" in log or ".confused" in log:
+            i = len(starts)//2
+            zeros =  np.vstack([starts[0:i], ends[0:i]]).T.tolist()
+            ones = np.vstack([starts[i:], ends[i:]]).T.tolist()
+
+        else:
+            zeros = np.vstack([starts, ends]).T.tolist()
+            ones = []
+        
+        return zeros, ones
 
     @staticmethod
     def _sequence_action(log, autolabel, settings):
@@ -134,8 +164,8 @@ class CUIX(torch.utils.data.Dataset):
         split_keys = [".button: ", ".driver speech starts"]
 
         split = log.split("\n\n")
-        task = [line.replace("\n", "") for line in split[0].split("\n")]
-        manipulations = [line.replace("\n", "").replace("DEMON ACTION: ", "") for line in split[1].split("\n")] if "DEMON ACTION:" in log else []
+        #task = [line.replace("\n", "") for line in split[0].split("\n")]
+        #manipulations = [line.replace("\n", "").replace("DEMON ACTION: ", "") for line in split[1].split("\n")] if "DEMON ACTION:" in log else []
         actions = [line.replace("\n", "") for line in split[-1].split("\n")][1:-1]
         timestamps = [int(a.split(" ")[0]) for a in actions]
         actions = [actions[i].replace(str(timestamps[i]) + "  ", "") for i in range(len(actions))]
@@ -235,15 +265,20 @@ class CUIX(torch.utils.data.Dataset):
         end = np.argmin((s - timestamp[1])**2)
         downsamlp_indices = sample_method(start, end, num_frames)
 
+        # load image sequence
         video = []
         for path in paths[downsamlp_indices]:
             img = cv2.imread(path)
-            img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+            img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
             img = cv2.resize(img, (224, 224))
             video.append(img)
         video = np.array(video)
 
+        # TODO visual will be done here on whole sequence (flip, contrast, brightness, ....)
+
         #video = crop_image_only_outside(video)
+        #min_shape = min(video.shape[1:3])
+        #video = center_crop(video, min_shape, min_shape)
         video = torch.from_numpy(video).permute(0, 3, 1, 2)
         video = (video/255.0-0.5)/0.5
         video = video.unsqueeze(0).float()
@@ -257,7 +292,6 @@ class CUIX(torch.utils.data.Dataset):
         sample["key"] = s["key"]
         sample["user_label"] = s["user_label"]
         sample["auto_label"] = s["auto_label"]
-
         timestamp = (s["start"]/1000, s["end"]/1000)
 
         if self.include_audio:
@@ -276,32 +310,105 @@ class CUIX(torch.utils.data.Dataset):
         else:
             sample["video"] = torch.zeros([1, self.video_numframes, 3, 224, 224]).float()
 
+        sample["timestamp"] =  (s["start"], s["end"])
         return sample
 
     def __len__(self):
         return len(self.sequences)
+    
+    def get_samples_of_key(self, key):
+        I = (key == np.array(self.sequences_keys)).nonzero()[0]
+        return [self[i] for i in I]
 
 
 
 gpu_id = 0
-dataset = CUIX(Path(r"D:\datasets\lmmtm_faces_0509"), include_audio=False)
-model = MOSEI_sentiment_model()
+batch_size = 4
 
 
 device = torch.device(f"cuda:{gpu_id}" if torch.cuda.is_available() else "cpu")
+
+model = MOSEI_sentiment_model()
 model.to(device)
 model.eval()
 
+#dataset = CUIX(Path(r"C:\Users\scharton\Desktop\prj_lmmtm\datasets\lmmtm0509"), include_audio=False)
+
+key = "BLGGB_1693285869774_685"
+sizes = [2000, 4000, 8000]
+deltas = [0.1, 0.25, 0.5, 1]
+
+R = []
+for size in sizes:
+        
+    r = []
+    for delta in deltas:
+
+        print("size: ", size)
+        print("delta: ", delta)
+
+        dataset = CUIX(Path(r"C:\Users\scharton\Desktop\prj_lmmtm\datasets\lmmtm0509"), 
+                    include_audio=False, 
+                    split_mode="slidingwindow", 
+                    seq_duration=size, 
+                    seq_sliding_delta=int(size*delta))
+
+        samples = dataset.get_samples_of_key(key)
+
+        video = torch.cat([sample["video"] for sample in samples], dim=0).to(device)
+        audio = torch.cat([sample["audio"] for sample in samples], dim=0).to(device)
+
+        scores = []
+        batch_split = np.unique(np.hstack([np.arange(0, len(samples), batch_size), len(samples)]))
+        with torch.no_grad():
+            for i in range(len(batch_split)-1):
+                print(f"batch {i+1}/{len(batch_split)-1}")
+                i0 = batch_split[i]
+                i1 = batch_split[i+1]
+                encoder_last_hidden_outputs, *_ = model(video=video[i0:i1], audio=audio[i0:i1])
+                score = model.classifier(encoder_last_hidden_outputs).squeeze().data.cpu().numpy()
+                scores.append(score)
+        scores = np.hstack(scores)
+        r.append(scores)
+    R.append(r)
+
+# visualize
 
 
-samples = [dataset[207], dataset[208], dataset[209]]
 
-video = torch.cat([sample["video"] for sample in samples], dim=0).to(device)
-audio = torch.cat([sample["audio"] for sample in samples], dim=0).to(device)
-
-with torch.no_grad():
-    encoder_last_hidden_outputs, *_ = model(video=video, audio=audio)
-    sentiment_score = model.classifier(encoder_last_hidden_outputs).squeeze().data.cpu().numpy()
+colormap = mpl.colormaps["plasma"]
+x1 = samples[-1]["timestamp"][1]/1000
 
 
-print('sentiment intensity:', np.round(sentiment_score, 3))
+fig, axes = plt.subplots(len(R), 1, figsize=(10, 8), gridspec_kw={'hspace': 0.5})
+fig.tight_layout()
+for r, result in enumerate(R):
+    ax = axes[r]
+    box = ax.get_position()
+    ax.set_position([box.x0, box.y0, box.width * 0.8, box.height])
+    for s, score in enumerate(result):
+
+        print(r, ", ", s)
+
+        size = sizes[r]/1000
+        delta = size*deltas[s]
+
+        color = colormap(np.linspace(0.9,0.1,len(result))[s])
+        line_width = 1 + s
+        x = np.linspace(0, len(score)-1, len(score))*delta + size
+        x[-1] = x1
+        ax.plot(x, score, lw=line_width, color=color, alpha=0.8, label=f"overlap: {delta} s")
+        ax.set_title(f"window size: {size}s (sampling: {1/(size/8)} fps)")
+        ax.set_xlim([0,x1+1])
+        ax.set_ylim([0,0.6])
+        ax.legend(loc='center left', bbox_to_anchor=(1, 0.5))
+        ax.grid(visible=True, axis="y")
+        #ax.grid()
+delta
+plt.show()
+
+# TODO
+# sampling absolute deltas (insteda of relative)
+
+# Idee audio aus letztem gespräch, 
+# dient als Informationsspeicher über zuletzt vorhandene Tonalität
