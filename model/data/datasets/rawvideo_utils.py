@@ -263,6 +263,7 @@ def load_audio(path, sr=44100, timestamp=None):
     if timestamp is not None:
         start, end = int(sr * timestamp[0]), int(sr * timestamp[1])
         audio = audio[start: end]
+
     audio = preprocess_audio(audio, sr=sr)
     audio = audio[:, :1024]
     return audio.unsqueeze(0).float()

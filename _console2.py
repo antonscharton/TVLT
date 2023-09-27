@@ -408,7 +408,7 @@ delta
 plt.show()
 
 # TODO
-# sampling absolute deltas (insteda of relative)
+# sampling absolute deltas (instead of relative)
 
 # Idee audio aus letztem gespräch, 
 # dient als Informationsspeicher über zuletzt vorhandene Tonalität
